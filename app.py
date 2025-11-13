@@ -31,9 +31,12 @@ def work():
     wait_time = 0.0
     processing_start = time.time()
     
-    if mode == "app":
-        # 5% requests hit a lock and sleep to simulate contention
-        if random.random() < 0.05:
+    if mode == "app" or mode == "mixed":
+        # 5% requests hit a lock and sleep to simulate contention (app mode)
+        # 5% for mixed mode as well (realistic)
+        contention_rate = 0.05
+        
+        if random.random() < contention_rate:
             with metrics_lock:
                 metrics["requests_waiting"] += 1
             

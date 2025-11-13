@@ -50,9 +50,32 @@ class Handler(BaseHTTPRequestHandler):
         proxy_delay = 0.0
         network_delay = 0.0
         
+        # MIXED MODE: Realistic scenario where any layer can have issues
+        if mode == "mixed":
+            # 5% chance of proxy overhead
+            if random.random() < 0.05:
+                proxy_delay = 0.05
+                time.sleep(proxy_delay)
+                with proxy_lock:
+                    proxy_metrics["proxy_overhead_count"] += 1
+            
+            # Network issues (7% chance total)
+            r = random.random()
+            if r < 0.03:
+                network_delay = 0.15  # Big spike - 3%
+                time.sleep(network_delay)
+                with proxy_lock:
+                    proxy_metrics["retries"] += 1
+            elif r < 0.07:
+                network_delay = 0.06  # Medium jitter - 4%
+                time.sleep(network_delay)
+            else:
+                network_delay = 0.002  # Base delay
+                time.sleep(network_delay)
+        
         # Simulate proxy overhead (mode=proxy): 5% of requests get 50ms delay
         # This represents proxy CPU saturation, config parsing, routing logic
-        if mode == "proxy":
+        elif mode == "proxy":
             if random.random() < 0.05:
                 proxy_delay = 0.05
                 time.sleep(proxy_delay)  # 50 ms proxy-induced delay
@@ -60,7 +83,7 @@ class Handler(BaseHTTPRequestHandler):
                     proxy_metrics["proxy_overhead_count"] += 1
 
         # Simulate network variability (mode=network): random jitter/packet loss
-        if mode == "network":
+        elif mode == "network":
             # Small probability of big jitter and small probability of medium jitter
             r = random.random()
             if r < 0.02:

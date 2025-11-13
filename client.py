@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 from collections import defaultdict
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--mode", choices=["app","proxy","network"], required=True)
+parser.add_argument("--mode", choices=["app","proxy","network","mixed"], required=True)
 parser.add_argument("--n", type=int, default=1000)
 parser.add_argument("--hist", action="store_true", help="show histogram")
 parser.add_argument("--analyze", action="store_true", help="show detailed analysis")
@@ -114,11 +114,17 @@ if latencies:
     net_latencies = network_delays if len(network_delays) > 0 else [0.0] * len(latencies)
     
     # Create comprehensive visualization: layer comparison + time series
-    fig = plt.figure(figsize=(18, 14))
+    # For mixed mode, use larger figure to show all metrics
+    if args.mode == "mixed":
+        fig = plt.figure(figsize=(18, 18))
+        gs_top = fig.add_gridspec(1, 3, hspace=0.3, wspace=0.3, 
+                                  top=0.95, bottom=0.60, left=0.08, right=0.98)
+    else:
+        fig = plt.figure(figsize=(18, 14))
+        gs_top = fig.add_gridspec(1, 3, hspace=0.3, wspace=0.3, 
+                                  top=0.95, bottom=0.50, left=0.08, right=0.98)
     
     # Top section: Layer comparison (3 bar charts)
-    gs_top = fig.add_gridspec(1, 3, hspace=0.3, wspace=0.3, 
-                              top=0.95, bottom=0.50, left=0.08, right=0.98)
     axes = [fig.add_subplot(gs_top[0, i]) for i in range(3)]
     
     layers = [
@@ -164,8 +170,13 @@ if latencies:
                    bbox=dict(boxstyle='round', facecolor='yellow', alpha=0.3))
     
     # Bottom section: Time-series graphs with SHARED X-AXIS for perfect correlation
-    gs_bottom = fig.add_gridspec(5, 1, hspace=0.05, 
-                                  top=0.45, bottom=0.05, left=0.10, right=0.95)
+    if args.mode == "mixed":
+        # For mixed mode, show MORE metrics (9 total: 1 latency + 8 layer metrics)
+        gs_bottom = fig.add_gridspec(9, 1, hspace=0.05, 
+                                      top=0.57, bottom=0.03, left=0.10, right=0.95)
+    else:
+        gs_bottom = fig.add_gridspec(5, 1, hspace=0.05, 
+                                      top=0.45, bottom=0.05, left=0.10, right=0.95)
     
     # Calculate rolling percentiles (window size = 50 requests)
     window_size = 50
@@ -179,12 +190,25 @@ if latencies:
         p50_over_time.append(np.percentile(window, 50))
         p99_over_time.append(np.percentile(window, 99))
     
-    # Create 5 subplots sharing the same x-axis
-    ax1 = fig.add_subplot(gs_bottom[0])  # Latency
-    ax2 = fig.add_subplot(gs_bottom[1], sharex=ax1)  # Lock Contention
-    ax3 = fig.add_subplot(gs_bottom[2], sharex=ax1)  # CPU Usage
-    ax4 = fig.add_subplot(gs_bottom[3], sharex=ax1)  # Active Threads
-    ax5 = fig.add_subplot(gs_bottom[4], sharex=ax1)  # Requests Waiting
+    # Create subplots sharing the same x-axis
+    if args.mode == "mixed":
+        # 9 subplots for mixed mode (all layers)
+        ax1 = fig.add_subplot(gs_bottom[0])  # Latency
+        ax2 = fig.add_subplot(gs_bottom[1], sharex=ax1)  # App: Lock Contention
+        ax3 = fig.add_subplot(gs_bottom[2], sharex=ax1)  # App: CPU
+        ax4 = fig.add_subplot(gs_bottom[3], sharex=ax1)  # App: Blocked Requests
+        ax5 = fig.add_subplot(gs_bottom[4], sharex=ax1)  # Proxy: Overhead
+        ax6 = fig.add_subplot(gs_bottom[5], sharex=ax1)  # Proxy: Queue Depth
+        ax7 = fig.add_subplot(gs_bottom[6], sharex=ax1)  # Network: Retries
+        ax8 = fig.add_subplot(gs_bottom[7], sharex=ax1)  # Network: Variance
+        ax9 = fig.add_subplot(gs_bottom[8], sharex=ax1)  # Network: Delay
+    else:
+        # 5 subplots for single-layer modes
+        ax1 = fig.add_subplot(gs_bottom[0])  # Latency
+        ax2 = fig.add_subplot(gs_bottom[1], sharex=ax1)
+        ax3 = fig.add_subplot(gs_bottom[2], sharex=ax1)
+        ax4 = fig.add_subplot(gs_bottom[3], sharex=ax1)
+        ax5 = fig.add_subplot(gs_bottom[4], sharex=ax1)
     
     # Get max time for consistent x-axis
     max_time = max(times) if times else 1
@@ -211,7 +235,121 @@ if latencies:
     plt.setp(ax1.get_xticklabels(), visible=False)
     
     # Choose which metrics to display based on mode
-    if args.mode == "proxy":
+    if args.mode == "mixed":
+        # MIXED MODE: Show ALL metrics from ALL layers for diagnosis
+        ax1.set_title('REALISTIC SCENARIO: Diagnose Which Layer is Causing p99 Spikes', 
+                     fontsize=12, fontweight='bold', pad=10)
+        
+        # APPLICATION METRICS
+        # 2. Lock Contention
+        if len(app_metrics_timeline['timestamps']) > 0:
+            contention_incremental = [0]
+            for i in range(1, len(app_metrics_timeline['lock_contention_count'])):
+                increment = app_metrics_timeline['lock_contention_count'][i] - app_metrics_timeline['lock_contention_count'][i-1]
+                contention_incremental.append(increment)
+            ax2.bar(app_metrics_timeline['timestamps'], contention_incremental, 
+                    width=0.5, color='#FF6B6B', alpha=0.7, edgecolor='darkred', linewidth=1)
+            for idx, val in enumerate(contention_incremental):
+                if val > 0:
+                    for ax in [ax1, ax2, ax3, ax4, ax5, ax6, ax7, ax8, ax9]:
+                        ax.axvline(app_metrics_timeline['timestamps'][idx], color='red', alpha=0.08, linewidth=1.5, linestyle='--')
+        ax2.set_ylabel('[APP]\nLock Events', fontsize=9, fontweight='bold', rotation=0, ha='right', va='center')
+        ax2.grid(True, alpha=0.3, axis='y')
+        ax2.set_xlim(0, max_time)
+        plt.setp(ax2.get_xticklabels(), visible=False)
+        
+        # 3. CPU
+        if len(app_metrics_timeline['timestamps']) > 0:
+            ax3.plot(app_metrics_timeline['timestamps'], app_metrics_timeline['cpu_usage'], 
+                    color='#FF9800', linewidth=2, marker='o', markersize=2)
+            ax3.fill_between(app_metrics_timeline['timestamps'], 0, app_metrics_timeline['cpu_usage'], alpha=0.2, color='#FF9800')
+        ax3.set_ylabel('[APP]\nCPU %', fontsize=9, fontweight='bold', rotation=0, ha='right', va='center')
+        ax3.grid(True, alpha=0.3, axis='y')
+        ax3.set_xlim(0, max_time)
+        plt.setp(ax3.get_xticklabels(), visible=False)
+        
+        # 4. Blocked Requests
+        if len(app_metrics_timeline['timestamps']) > 0:
+            ax4.plot(app_metrics_timeline['timestamps'], app_metrics_timeline['requests_waiting'], 
+                    color='#9C27B0', linewidth=2, marker='^', markersize=2)
+            ax4.fill_between(app_metrics_timeline['timestamps'], 0, app_metrics_timeline['requests_waiting'], alpha=0.2, color='#9C27B0')
+        ax4.set_ylabel('[APP]\nBlocked', fontsize=9, fontweight='bold', rotation=0, ha='right', va='center')
+        ax4.grid(True, alpha=0.3, axis='y')
+        ax4.set_xlim(0, max_time)
+        plt.setp(ax4.get_xticklabels(), visible=False)
+        
+        # PROXY METRICS
+        # 5. Proxy Overhead
+        if len(proxy_metrics_timeline['timestamps']) > 0:
+            overhead_incremental = [0]
+            for i in range(1, len(proxy_metrics_timeline['proxy_overhead_count'])):
+                increment = proxy_metrics_timeline['proxy_overhead_count'][i] - proxy_metrics_timeline['proxy_overhead_count'][i-1]
+                overhead_incremental.append(increment)
+            ax5.bar(proxy_metrics_timeline['timestamps'], overhead_incremental, 
+                    width=0.5, color='#4ECDC4', alpha=0.7, edgecolor='#008B8B', linewidth=1)
+            for idx, val in enumerate(overhead_incremental):
+                if val > 0:
+                    for ax in [ax1, ax2, ax3, ax4, ax5, ax6, ax7, ax8, ax9]:
+                        ax.axvline(proxy_metrics_timeline['timestamps'][idx], color='cyan', alpha=0.08, linewidth=1.5, linestyle='--')
+        ax5.set_ylabel('[PROXY]\nOverhead', fontsize=9, fontweight='bold', rotation=0, ha='right', va='center')
+        ax5.grid(True, alpha=0.3, axis='y')
+        ax5.set_xlim(0, max_time)
+        plt.setp(ax5.get_xticklabels(), visible=False)
+        
+        # 6. Queue Depth
+        if len(proxy_metrics_timeline['timestamps']) > 0:
+            ax6.plot(proxy_metrics_timeline['timestamps'], proxy_metrics_timeline['requests_in_queue'], 
+                    color='#FF9800', linewidth=2, marker='o', markersize=2)
+            ax6.fill_between(proxy_metrics_timeline['timestamps'], 0, proxy_metrics_timeline['requests_in_queue'], alpha=0.2, color='#FF9800')
+        ax6.set_ylabel('[PROXY]\nQueue', fontsize=9, fontweight='bold', rotation=0, ha='right', va='center')
+        ax6.grid(True, alpha=0.3, axis='y')
+        ax6.set_xlim(0, max_time)
+        plt.setp(ax6.get_xticklabels(), visible=False)
+        
+        # NETWORK METRICS
+        # 7. Network Retries
+        if len(proxy_metrics_timeline['timestamps']) > 0:
+            retries_incremental = [0]
+            for i in range(1, len(proxy_metrics_timeline['retries'])):
+                increment = proxy_metrics_timeline['retries'][i] - proxy_metrics_timeline['retries'][i-1]
+                retries_incremental.append(increment)
+            ax7.bar(proxy_metrics_timeline['timestamps'], retries_incremental, 
+                    width=0.5, color='#95E1D3', alpha=0.7, edgecolor='#00A896', linewidth=1)
+            for idx, val in enumerate(retries_incremental):
+                if val > 0:
+                    for ax in [ax1, ax2, ax3, ax4, ax5, ax6, ax7, ax8, ax9]:
+                        ax.axvline(proxy_metrics_timeline['timestamps'][idx], color='green', alpha=0.08, linewidth=1.5, linestyle='--')
+        ax7.set_ylabel('[NET]\nRetries', fontsize=9, fontweight='bold', rotation=0, ha='right', va='center')
+        ax7.grid(True, alpha=0.3, axis='y')
+        ax7.set_xlim(0, max_time)
+        plt.setp(ax7.get_xticklabels(), visible=False)
+        
+        # 8. Network Variance
+        if len(network_delays) > 0:
+            window = 20
+            network_variance = []
+            variance_times = []
+            for i in range(window, len(network_delays)):
+                window_data = network_delays[i-window:i]
+                variance_times.append(latency_timestamps[i])
+                network_variance.append(np.std(window_data))
+            ax8.plot(variance_times, network_variance, color='#FF5722', linewidth=2, marker='o', markersize=2)
+            ax8.fill_between(variance_times, 0, network_variance, alpha=0.2, color='#FF5722')
+        ax8.set_ylabel('[NET]\nVariance', fontsize=9, fontweight='bold', rotation=0, ha='right', va='center')
+        ax8.grid(True, alpha=0.3, axis='y')
+        ax8.set_xlim(0, max_time)
+        plt.setp(ax8.get_xticklabels(), visible=False)
+        
+        # 9. Network Delay
+        if len(network_delays) > 0 and len(latency_timestamps) == len(network_delays):
+            ax9.plot(latency_timestamps, network_delays, color='#673AB7', linewidth=1, alpha=0.5)
+            ax9.fill_between(latency_timestamps, 0, network_delays, alpha=0.15, color='#673AB7')
+        ax9.set_ylabel('[NET]\nDelay (ms)', fontsize=9, fontweight='bold', rotation=0, ha='right', va='center')
+        ax9.set_xlabel('Time (seconds)', fontsize=11, fontweight='bold')
+        ax9.grid(True, alpha=0.3, axis='y')
+        ax9.set_xlim(0, max_time)
+    
+    elif args.mode == "proxy":
         # PROXY MODE: Show proxy-specific metrics
         if len(proxy_metrics_timeline['timestamps']) > 0:
             # Calculate incremental proxy overhead events
