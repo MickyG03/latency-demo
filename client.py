@@ -22,6 +22,7 @@ except:
 
 url = f"{host}/work?mode={args.mode}"
 latencies = []
+latency_timestamps = []  # Track when each request completed
 errors = 0
 
 # Track detailed metrics from headers
@@ -30,18 +31,42 @@ proxy_processing_times = []
 network_delays = []
 upstream_times = []
 
+# Track application metrics over time
+app_metrics_timeline = {
+    'timestamps': [],
+    'cpu_usage': [],
+    'active_threads': [],
+    'lock_contention_count': [],
+    'requests_waiting': [],
+}
+
 print(f"\nRunning {args.n} requests in mode: {args.mode}")
 print("=" * 60)
+
+start_time = time.time()
 
 for i in range(args.n):
     if (i + 1) % 100 == 0:
         print(f"Progress: {i + 1}/{args.n} requests...")
+    
+    # Poll app metrics every 10 requests to track over time
+    if i % 10 == 0:
+        try:
+            metrics_resp = requests.get("http://127.0.0.1:5000/metrics", timeout=1).json()
+            app_metrics_timeline['timestamps'].append(time.time() - start_time)
+            app_metrics_timeline['cpu_usage'].append(metrics_resp.get('cpu_percent', 0))
+            app_metrics_timeline['active_threads'].append(metrics_resp.get('active_threads', 0))
+            app_metrics_timeline['lock_contention_count'].append(metrics_resp.get('lock_contention_count', 0))
+            app_metrics_timeline['requests_waiting'].append(metrics_resp.get('requests_waiting', 0))
+        except:
+            pass  # Skip if metrics unavailable
     
     start = time.time()
     try:
         r = requests.get(url, timeout=10)
         elapsed_ms = (time.time() - start) * 1000
         latencies.append(elapsed_ms)
+        latency_timestamps.append(time.time() - start_time)  # Time since test started
         
         # Extract timing headers from proxy
         if "X-Proxy-Queue-Wait-Ms" in r.headers:
@@ -67,8 +92,13 @@ if latencies:
     # Calculate network latencies
     net_latencies = network_delays if network_delays else [2.0] * len(latencies)
     
-    # Create layer comparison visualization
-    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+    # Create comprehensive visualization: layer comparison + time series
+    fig = plt.figure(figsize=(18, 14))
+    
+    # Top section: Layer comparison (3 bar charts)
+    gs_top = fig.add_gridspec(1, 3, hspace=0.3, wspace=0.3, 
+                              top=0.95, bottom=0.50, left=0.08, right=0.98)
+    axes = [fig.add_subplot(gs_top[0, i]) for i in range(3)]
     
     layers = [
         ('APPLICATION LAYER', app_latencies, '#FF6B6B'),
@@ -108,18 +138,118 @@ if latencies:
         # Highlight if p99 is significantly higher
         if p99_layer > p50_layer * 2:
             ax.set_facecolor('#fff5f5')
-            ax.text(0.5, 0.95, '⚠️ HIGH p99', transform=ax.transAxes,
+            ax.text(0.5, 0.95, 'HIGH p99', transform=ax.transAxes,
                    ha='center', va='top', fontsize=10, color='red', fontweight='bold',
                    bbox=dict(boxstyle='round', facecolor='yellow', alpha=0.3))
     
-    plt.suptitle(f'Layer-by-Layer Latency Analysis (Mode: {args.mode.upper()})',
-                fontsize=14, fontweight='bold')
-    plt.tight_layout()
+    # Bottom section: Time-series graphs with SHARED X-AXIS for perfect correlation
+    gs_bottom = fig.add_gridspec(5, 1, hspace=0.05, 
+                                  top=0.45, bottom=0.05, left=0.10, right=0.95)
+    
+    # Calculate rolling percentiles (window size = 50 requests)
+    window_size = 50
+    times = []
+    p50_over_time = []
+    p99_over_time = []
+    
+    for i in range(window_size, len(latencies)):
+        window = latencies[i-window_size:i]
+        times.append(latency_timestamps[i])
+        p50_over_time.append(np.percentile(window, 50))
+        p99_over_time.append(np.percentile(window, 99))
+    
+    # Create 5 subplots sharing the same x-axis
+    ax1 = fig.add_subplot(gs_bottom[0])  # Latency
+    ax2 = fig.add_subplot(gs_bottom[1], sharex=ax1)  # Lock Contention
+    ax3 = fig.add_subplot(gs_bottom[2], sharex=ax1)  # CPU Usage
+    ax4 = fig.add_subplot(gs_bottom[3], sharex=ax1)  # Active Threads
+    ax5 = fig.add_subplot(gs_bottom[4], sharex=ax1)  # Requests Waiting
+    
+    # Get max time for consistent x-axis
+    max_time = max(times) if times else 1
+    
+    # 1. Latency over time (p50 vs p99)
+    ax1.plot(times, p50_over_time, color='#4CAF50', linewidth=2.5, label='p50 (stable)', alpha=0.8)
+    ax1.plot(times, p99_over_time, color='#F44336', linewidth=2.5, label='p99 (spikes)', alpha=0.8)
+    ax1.fill_between(times, p50_over_time, p99_over_time, alpha=0.15, color='red')
+    
+    ax1.set_ylabel('Latency\n(ms)', fontsize=10, fontweight='bold', rotation=0, ha='right', va='center')
+    ax1.set_title('APPLICATION LAYER: Time-Aligned Diagnostic Metrics', fontsize=12, fontweight='bold', pad=10)
+    ax1.legend(loc='upper right', fontsize=9, ncol=2)
+    ax1.grid(True, alpha=0.3, axis='y')
+    ax1.set_xlim(0, max_time)
+    plt.setp(ax1.get_xticklabels(), visible=False)
+    
+    # 2. Lock Contention Events over time
+    if len(app_metrics_timeline['timestamps']) > 0:
+        # Calculate incremental lock contention (new events since last poll)
+        contention_incremental = [0]
+        for i in range(1, len(app_metrics_timeline['lock_contention_count'])):
+            increment = app_metrics_timeline['lock_contention_count'][i] - app_metrics_timeline['lock_contention_count'][i-1]
+            contention_incremental.append(increment)
+        
+        ax2.bar(app_metrics_timeline['timestamps'], contention_incremental, 
+                width=0.5, color='#FF6B6B', alpha=0.8, edgecolor='darkred', linewidth=1.5)
+        
+        # Add vertical lines to show correlation
+        for idx, val in enumerate(contention_incremental):
+            if val > 0:
+                ax1.axvline(app_metrics_timeline['timestamps'][idx], color='red', alpha=0.1, linewidth=1.5, linestyle='--')
+                ax2.axvline(app_metrics_timeline['timestamps'][idx], color='red', alpha=0.1, linewidth=1.5, linestyle='--')
+                ax3.axvline(app_metrics_timeline['timestamps'][idx], color='red', alpha=0.1, linewidth=1.5, linestyle='--')
+                ax4.axvline(app_metrics_timeline['timestamps'][idx], color='red', alpha=0.1, linewidth=1.5, linestyle='--')
+                ax5.axvline(app_metrics_timeline['timestamps'][idx], color='red', alpha=0.1, linewidth=1.5, linestyle='--')
+    
+    ax2.set_ylabel('Lock\nEvents', fontsize=10, fontweight='bold', rotation=0, ha='right', va='center')
+    ax2.grid(True, alpha=0.3, axis='y')
+    ax2.set_xlim(0, max_time)
+    plt.setp(ax2.get_xticklabels(), visible=False)
+    
+    # 3. CPU Usage over time
+    if len(app_metrics_timeline['timestamps']) > 0:
+        ax3.plot(app_metrics_timeline['timestamps'], app_metrics_timeline['cpu_usage'], 
+                color='#FF9800', linewidth=2.5, marker='o', markersize=3)
+        ax3.fill_between(app_metrics_timeline['timestamps'], 0, app_metrics_timeline['cpu_usage'], 
+                        alpha=0.3, color='#FF9800')
+    
+    ax3.set_ylabel('CPU\n(%)', fontsize=10, fontweight='bold', rotation=0, ha='right', va='center')
+    ax3.grid(True, alpha=0.3, axis='y')
+    ax3.set_xlim(0, max_time)
+    plt.setp(ax3.get_xticklabels(), visible=False)
+    
+    # 4. Active Threads over time
+    if len(app_metrics_timeline['timestamps']) > 0:
+        ax4.plot(app_metrics_timeline['timestamps'], app_metrics_timeline['active_threads'], 
+                color='#2196F3', linewidth=2.5, marker='s', markersize=3)
+        ax4.fill_between(app_metrics_timeline['timestamps'], 
+                        min(app_metrics_timeline['active_threads']) - 0.5,
+                        app_metrics_timeline['active_threads'], 
+                        alpha=0.3, color='#2196F3')
+    
+    ax4.set_ylabel('Active\nThreads', fontsize=10, fontweight='bold', rotation=0, ha='right', va='center')
+    ax4.grid(True, alpha=0.3, axis='y')
+    ax4.set_xlim(0, max_time)
+    plt.setp(ax4.get_xticklabels(), visible=False)
+    
+    # 5. Requests Waiting (Blocked) over time
+    if len(app_metrics_timeline['timestamps']) > 0:
+        ax5.plot(app_metrics_timeline['timestamps'], app_metrics_timeline['requests_waiting'], 
+                color='#9C27B0', linewidth=2.5, marker='^', markersize=3)
+        ax5.fill_between(app_metrics_timeline['timestamps'], 0, app_metrics_timeline['requests_waiting'], 
+                        alpha=0.3, color='#9C27B0')
+    
+    ax5.set_ylabel('Blocked\nRequests', fontsize=10, fontweight='bold', rotation=0, ha='right', va='center')
+    ax5.set_xlabel('Time (seconds)', fontsize=11, fontweight='bold')
+    ax5.grid(True, alpha=0.3, axis='y')
+    ax5.set_xlim(0, max_time)
+    
+    plt.suptitle(f'Tail Latency Diagnosis - Application Contention Metrics (Mode: {args.mode.upper()})',
+                fontsize=15, fontweight='bold', y=0.99)
     
     # Save the figure
     filename = f'layer_analysis_{args.mode}.png'
     plt.savefig(filename, dpi=300, bbox_inches='tight')
-    print(f"\n📊 Graph saved as: {filename}")
+    print(f"\n[GRAPH] Saved as: {filename}")
     
     plt.show(block=False)
     plt.pause(0.1)
@@ -140,13 +270,13 @@ if latencies:
     print(f"\nPercentiles:")
     print(f"  p50:   {p50:.2f} ms")
     print(f"  p95:   {p95:.2f} ms")
-    print(f"  p99:   {p99:.2f} ms  ⚠️  (TAIL LATENCY)")
+    print(f"  p99:   {p99:.2f} ms  [TAIL LATENCY]")
     print(f"  p99.9: {p99_9:.2f} ms")
     print(f"  max:   {max_lat:.2f} ms")
     
     # Calculate the delta between p99 and p50 (key metric!)
     p99_inflation = ((p99 - p50) / p50) * 100
-    print(f"\n📊 P99 Inflation: {p99_inflation:.1f}% above p50")
+    print(f"\nP99 Inflation: {p99_inflation:.1f}% above p50")
 else:
     print("No successful requests.")
 
@@ -157,22 +287,30 @@ if args.analyze and latencies:
     print("=" * 60)
     
     # Application metrics
-    print("\n🔹 APPLICATION LAYER METRICS:")
+    print("\n[APPLICATION LAYER METRICS]")
     try:
         app_metrics = requests.get("http://127.0.0.1:5000/metrics", timeout=2).json()
         print(f"  Total requests processed: {app_metrics['requests_total']}")
         print(f"  Lock contention events: {app_metrics['lock_contention_count']}")
         print(f"  Contention rate: {app_metrics['contention_rate']}%")
         print(f"  Avg processing time: {app_metrics['avg_processing_time_ms']:.2f} ms")
+        
+        wait_time = app_metrics['avg_wait_time_ms']
         if app_metrics['lock_contention_count'] > 0:
-            print(f"  Avg wait time (contended): {app_metrics['avg_wait_time_ms']:.2f} ms  ⚠️")
+            if wait_time > 10:  # Only mark as HIGH if wait time is significant
+                print(f"  Avg wait time (contended): {wait_time:.2f} ms  [HIGH]")
+            else:
+                print(f"  Avg wait time (contended): {wait_time:.2f} ms")
+        else:
+            print(f"  Avg wait time (contended): {wait_time:.2f} ms")
+            
         print(f"  CPU usage: {app_metrics['cpu_percent']:.1f}%")
         print(f"  Active threads: {app_metrics['active_threads']}")
     except Exception as e:
-        print(f"  ❌ Could not fetch app metrics: {e}")
+        print(f"  [ERROR] Could not fetch app metrics: {e}")
     
     # Proxy metrics
-    print("\n🔹 PROXY LAYER METRICS:")
+    print("\n[PROXY LAYER METRICS]")
     try:
         proxy_metrics = requests.get(f"{host}/proxy/metrics", timeout=2).json()
         print(f"  Total requests: {proxy_metrics['requests_total']}")
@@ -180,51 +318,51 @@ if args.analyze and latencies:
         print(f"  Avg queue wait: {proxy_metrics['avg_queue_wait_ms']:.2f} ms")
         print(f"  Proxy overhead events: {proxy_metrics['proxy_overhead_count']}")
         if proxy_metrics['proxy_overhead_count'] > 0:
-            print(f"  Avg proxy processing: {proxy_metrics['avg_proxy_processing_ms']:.2f} ms  ⚠️")
+            print(f"  Avg proxy processing: {proxy_metrics['avg_proxy_processing_ms']:.2f} ms  [HIGH]")
         print(f"  Connection errors: {proxy_metrics['connection_errors']}")
         print(f"  Upstream timeouts: {proxy_metrics['upstream_timeouts']}")
     except Exception as e:
-        print(f"  ❌ Could not fetch proxy metrics: {e}")
+        print(f"  [ERROR] Could not fetch proxy metrics: {e}")
     
     # Network metrics (from collected headers)
-    print("\n🔹 NETWORK LAYER METRICS:")
+    print("\n[NETWORK LAYER METRICS]")
     if network_delays:
         network_p50 = np.percentile(network_delays, 50)
         network_p99 = np.percentile(network_delays, 99)
         print(f"  Network delay p50: {network_p50:.2f} ms")
-        print(f"  Network delay p99: {network_p99:.2f} ms  ⚠️")
+        print(f"  Network delay p99: {network_p99:.2f} ms  [MONITORED]")
         print(f"  Retries: {proxy_metrics.get('retries', 0)}")
         
         if network_p99 > network_p50 * 5:
-            print(f"  ⚠️  High network variability detected!")
+            print(f"  [WARNING] High network variability detected!")
     
     # DIAGNOSTIC SUMMARY
     print("\n" + "=" * 60)
-    print("🔍 DIAGNOSTIC SUMMARY")
+    print("[DIAGNOSTIC SUMMARY]")
     print("=" * 60)
     
     if args.mode == "app":
-        print("\n✅ Evidence points to APPLICATION-LAYER CONTENTION:")
-        print(f"  • Contention rate: {app_metrics.get('contention_rate', 0)}%")
-        print(f"  • Wait time for contended requests: {app_metrics.get('avg_wait_time_ms', 0):.2f} ms")
-        print(f"  • p99 latency aligns with lock hold time (~100ms)")
-        print(f"  • Proxy and network metrics show normal behavior")
+        print("\n[ROOT CAUSE] APPLICATION-LAYER CONTENTION:")
+        print(f"  * Contention rate: {app_metrics.get('contention_rate', 0)}%")
+        print(f"  * Wait time for contended requests: {app_metrics.get('avg_wait_time_ms', 0):.2f} ms")
+        print(f"  * p99 latency aligns with lock hold time (~100ms)")
+        print(f"  * Proxy and network metrics show normal behavior")
         
     elif args.mode == "proxy":
-        print("\n✅ Evidence points to PROXY OVERHEAD:")
-        print(f"  • Proxy overhead events: {proxy_metrics.get('proxy_overhead_count', 0)}")
-        print(f"  • Avg proxy processing time: {proxy_metrics.get('avg_proxy_processing_ms', 0):.2f} ms")
-        print(f"  • p99 latency aligns with proxy delays (~50ms)")
-        print(f"  • Application processing time remains stable")
-        print(f"  • Network metrics show normal behavior")
+        print("\n[ROOT CAUSE] PROXY OVERHEAD:")
+        print(f"  * Proxy overhead events: {proxy_metrics.get('proxy_overhead_count', 0)}")
+        print(f"  * Avg proxy processing time: {proxy_metrics.get('avg_proxy_processing_ms', 0):.2f} ms")
+        print(f"  * p99 latency aligns with proxy delays (~50ms)")
+        print(f"  * Application processing time remains stable")
+        print(f"  * Network metrics show normal behavior")
         
     elif args.mode == "network":
-        print("\n✅ Evidence points to NETWORK VARIABILITY:")
-        print(f"  • Network retries: {proxy_metrics.get('retries', 0)}")
-        print(f"  • Network p99 delay: {network_p99:.2f} ms")
-        print(f"  • High variance in network layer measurements")
-        print(f"  • Application and proxy metrics remain stable")
-        print(f"  • p99 latency aligns with network spikes (60-150ms)")
+        print("\n[ROOT CAUSE] NETWORK VARIABILITY:")
+        print(f"  * Network retries: {proxy_metrics.get('retries', 0)}")
+        print(f"  * Network p99 delay: {network_p99:.2f} ms")
+        print(f"  * High variance in network layer measurements")
+        print(f"  * Application and proxy metrics remain stable")
+        print(f"  * p99 latency aligns with network spikes (60-150ms)")
     
     print("\n" + "=" * 60)
 
