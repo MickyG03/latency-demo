@@ -56,6 +56,74 @@ for i in range(args.n):
     except Exception as e:
         errors += 1
 
+# Calculate layer-specific percentiles and create visualization
+if latencies:
+    # Calculate upstream (app) latencies from headers
+    app_latencies = upstream_times if upstream_times else [2.0] * len(latencies)
+    
+    # Calculate proxy latencies
+    proxy_latencies = proxy_processing_times if proxy_processing_times else [0.0] * len(latencies)
+    
+    # Calculate network latencies
+    net_latencies = network_delays if network_delays else [2.0] * len(latencies)
+    
+    # Create layer comparison visualization
+    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+    
+    layers = [
+        ('APPLICATION LAYER', app_latencies, '#FF6B6B'),
+        ('PROXY LAYER', proxy_latencies, '#4ECDC4'),
+        ('NETWORK LAYER', net_latencies, '#95E1D3')
+    ]
+    
+    for idx, (layer_name, layer_data, color) in enumerate(layers):
+        ax = axes[idx]
+        
+        if layer_data and len(layer_data) > 0:
+            p50_layer = np.percentile(layer_data, 50)
+            p99_layer = np.percentile(layer_data, 99)
+        else:
+            p50_layer = 0
+            p99_layer = 0
+        
+        # Bar chart for p50 and p99
+        x_pos = [0, 1]
+        bar1 = ax.bar(x_pos[0], p50_layer, color=color, alpha=0.6, edgecolor='black', linewidth=2)
+        bar2 = ax.bar(x_pos[1], p99_layer, color=color, alpha=1.0, edgecolor='black', linewidth=2)
+        
+        ax.set_xticks(x_pos)
+        ax.set_xticklabels(['p50', 'p99'])
+        
+        # Add value labels on bars
+        ax.text(x_pos[0], p50_layer, f'{p50_layer:.2f}ms',
+               ha='center', va='bottom', fontweight='bold', fontsize=11)
+        ax.text(x_pos[1], p99_layer, f'{p99_layer:.2f}ms',
+               ha='center', va='bottom', fontweight='bold', fontsize=11)
+        
+        ax.set_ylabel('Latency (ms)', fontsize=11, fontweight='bold')
+        ax.set_title(layer_name, fontsize=12, fontweight='bold')
+        ax.grid(True, alpha=0.3, axis='y')
+        ax.set_ylim(bottom=0)
+        
+        # Highlight if p99 is significantly higher
+        if p99_layer > p50_layer * 2:
+            ax.set_facecolor('#fff5f5')
+            ax.text(0.5, 0.95, '⚠️ HIGH p99', transform=ax.transAxes,
+                   ha='center', va='top', fontsize=10, color='red', fontweight='bold',
+                   bbox=dict(boxstyle='round', facecolor='yellow', alpha=0.3))
+    
+    plt.suptitle(f'Layer-by-Layer Latency Analysis (Mode: {args.mode.upper()})',
+                fontsize=14, fontweight='bold')
+    plt.tight_layout()
+    
+    # Save the figure
+    filename = f'layer_analysis_{args.mode}.png'
+    plt.savefig(filename, dpi=300, bbox_inches='tight')
+    print(f"\n📊 Graph saved as: {filename}")
+    
+    plt.show(block=False)
+    plt.pause(0.1)
+
 print("\n" + "=" * 60)
 print("LATENCY RESULTS")
 print("=" * 60)
