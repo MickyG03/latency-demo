@@ -103,14 +103,15 @@ for i in range(args.n):
 
 # Calculate layer-specific percentiles and create visualization
 if latencies:
-    # Calculate upstream (app) latencies from headers
-    app_latencies = upstream_times if upstream_times else [2.0] * len(latencies)
+    # Use actual measurements from headers, or use minimal values if not available
+    # APPLICATION LAYER: upstream processing time from app server
+    app_latencies = upstream_times if len(upstream_times) > 0 else [2.0] * len(latencies)
     
-    # Calculate proxy latencies
-    proxy_latencies = proxy_processing_times if proxy_processing_times else [0.0] * len(latencies)
+    # PROXY LAYER: proxy processing time (overhead)
+    proxy_latencies = proxy_processing_times if len(proxy_processing_times) > 0 else [0.0] * len(latencies)
     
-    # Calculate network latencies
-    net_latencies = network_delays if network_delays else [2.0] * len(latencies)
+    # NETWORK LAYER: network delays
+    net_latencies = network_delays if len(network_delays) > 0 else [0.0] * len(latencies)
     
     # Create comprehensive visualization: layer comparison + time series
     fig = plt.figure(figsize=(18, 14))
@@ -269,6 +270,78 @@ if latencies:
                             alpha=0.3, color='#9C27B0')
         
         ax5.set_ylabel('Connection\nErrors', fontsize=10, fontweight='bold', rotation=0, ha='right', va='center')
+        ax5.set_xlabel('Time (seconds)', fontsize=11, fontweight='bold')
+        ax5.grid(True, alpha=0.3, axis='y')
+        ax5.set_xlim(0, max_time)
+    
+    elif args.mode == "network":
+        # NETWORK MODE: Show network-specific metrics
+        if len(proxy_metrics_timeline['timestamps']) > 0:
+            # Calculate incremental retries (new retries since last poll)
+            retries_incremental = [0]
+            for i in range(1, len(proxy_metrics_timeline['retries'])):
+                increment = proxy_metrics_timeline['retries'][i] - proxy_metrics_timeline['retries'][i-1]
+                retries_incremental.append(increment)
+            
+            # 2. Network Retries/Retransmissions
+            ax2.bar(proxy_metrics_timeline['timestamps'], retries_incremental, 
+                    width=0.5, color='#95E1D3', alpha=0.8, edgecolor='#00A896', linewidth=1.5)
+            
+            # Add vertical lines to show correlation
+            for idx, val in enumerate(retries_incremental):
+                if val > 0:
+                    ax1.axvline(proxy_metrics_timeline['timestamps'][idx], color='green', alpha=0.15, linewidth=1.5, linestyle='--')
+                    ax2.axvline(proxy_metrics_timeline['timestamps'][idx], color='green', alpha=0.15, linewidth=1.5, linestyle='--')
+                    ax3.axvline(proxy_metrics_timeline['timestamps'][idx], color='green', alpha=0.15, linewidth=1.5, linestyle='--')
+                    ax4.axvline(proxy_metrics_timeline['timestamps'][idx], color='green', alpha=0.15, linewidth=1.5, linestyle='--')
+                    ax5.axvline(proxy_metrics_timeline['timestamps'][idx], color='green', alpha=0.15, linewidth=1.5, linestyle='--')
+        
+        ax2.set_ylabel('Network\nRetries', fontsize=10, fontweight='bold', rotation=0, ha='right', va='center')
+        ax2.grid(True, alpha=0.3, axis='y')
+        ax2.set_xlim(0, max_time)
+        plt.setp(ax2.get_xticklabels(), visible=False)
+        
+        # 3. Network Delay Variance (using rolling window)
+        if len(network_delays) > 0:
+            # Calculate rolling variance
+            window = 20
+            network_variance = []
+            variance_times = []
+            for i in range(window, len(network_delays)):
+                window_data = network_delays[i-window:i]
+                variance_times.append(latency_timestamps[i])
+                network_variance.append(np.std(window_data))
+            
+            ax3.plot(variance_times, network_variance, 
+                    color='#FF9800', linewidth=2.5, marker='o', markersize=3)
+            ax3.fill_between(variance_times, 0, network_variance, 
+                            alpha=0.3, color='#FF9800')
+        
+        ax3.set_ylabel('Network\nVariance', fontsize=10, fontweight='bold', rotation=0, ha='right', va='center')
+        ax3.grid(True, alpha=0.3, axis='y')
+        ax3.set_xlim(0, max_time)
+        plt.setp(ax3.get_xticklabels(), visible=False)
+        
+        # 4. Connection Errors Over Time
+        if len(proxy_metrics_timeline['timestamps']) > 0:
+            ax4.plot(proxy_metrics_timeline['timestamps'], proxy_metrics_timeline['connection_errors'], 
+                    color='#E53935', linewidth=2.5, marker='s', markersize=3)
+            ax4.fill_between(proxy_metrics_timeline['timestamps'], 0, proxy_metrics_timeline['connection_errors'], 
+                            alpha=0.3, color='#E53935')
+        
+        ax4.set_ylabel('Connection\nErrors', fontsize=10, fontweight='bold', rotation=0, ha='right', va='center')
+        ax4.grid(True, alpha=0.3, axis='y')
+        ax4.set_xlim(0, max_time)
+        plt.setp(ax4.get_xticklabels(), visible=False)
+        
+        # 5. Network Delay (instantaneous)
+        if len(network_delays) > 0 and len(latency_timestamps) == len(network_delays):
+            ax5.plot(latency_timestamps, network_delays, 
+                    color='#9C27B0', linewidth=1.5, alpha=0.6)
+            ax5.fill_between(latency_timestamps, 0, network_delays, 
+                            alpha=0.2, color='#9C27B0')
+        
+        ax5.set_ylabel('Network\nDelay (ms)', fontsize=10, fontweight='bold', rotation=0, ha='right', va='center')
         ax5.set_xlabel('Time (seconds)', fontsize=11, fontweight='bold')
         ax5.grid(True, alpha=0.3, axis='y')
         ax5.set_xlim(0, max_time)
