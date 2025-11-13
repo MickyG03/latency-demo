@@ -1,8 +1,8 @@
 # proxy.py
 from http.server import BaseHTTPRequestHandler, HTTPServer
-import requests, urllib.parse, random, time, threading
+import requests, urllib.parse, random, time, threading, os
 
-UPSTREAM = "http://127.0.0.1:5000"
+UPSTREAM = os.environ.get("SERVER", "http://127.0.0.1:5000")
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -51,4 +51,5 @@ def run(server_class=HTTPServer, handler_class=Handler, port=8080):
     httpd.serve_forever()
 
 if __name__ == "__main__":
-    run()
+    port = int(os.environ.get("PROXY_PORT", "8080"))
+    run(port=port)
