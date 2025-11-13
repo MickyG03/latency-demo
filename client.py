@@ -40,6 +40,16 @@ app_metrics_timeline = {
     'requests_waiting': [],
 }
 
+# Track proxy metrics over time
+proxy_metrics_timeline = {
+    'timestamps': [],
+    'requests_in_queue': [],
+    'proxy_overhead_count': [],
+    'avg_queue_wait': [],
+    'connection_errors': [],
+    'retries': [],
+}
+
 print(f"\nRunning {args.n} requests in mode: {args.mode}")
 print("=" * 60)
 
@@ -49,15 +59,25 @@ for i in range(args.n):
     if (i + 1) % 100 == 0:
         print(f"Progress: {i + 1}/{args.n} requests...")
     
-    # Poll app metrics every 10 requests to track over time
+    # Poll metrics every 10 requests to track over time
     if i % 10 == 0:
         try:
-            metrics_resp = requests.get("http://127.0.0.1:5000/metrics", timeout=1).json()
+            # Always poll app metrics
+            app_resp = requests.get("http://127.0.0.1:5000/metrics", timeout=1).json()
             app_metrics_timeline['timestamps'].append(time.time() - start_time)
-            app_metrics_timeline['cpu_usage'].append(metrics_resp.get('cpu_percent', 0))
-            app_metrics_timeline['active_threads'].append(metrics_resp.get('active_threads', 0))
-            app_metrics_timeline['lock_contention_count'].append(metrics_resp.get('lock_contention_count', 0))
-            app_metrics_timeline['requests_waiting'].append(metrics_resp.get('requests_waiting', 0))
+            app_metrics_timeline['cpu_usage'].append(app_resp.get('cpu_percent', 0))
+            app_metrics_timeline['active_threads'].append(app_resp.get('active_threads', 0))
+            app_metrics_timeline['lock_contention_count'].append(app_resp.get('lock_contention_count', 0))
+            app_metrics_timeline['requests_waiting'].append(app_resp.get('requests_waiting', 0))
+            
+            # Also poll proxy metrics
+            proxy_resp = requests.get(f"{host}/proxy/metrics", timeout=1).json()
+            proxy_metrics_timeline['timestamps'].append(time.time() - start_time)
+            proxy_metrics_timeline['requests_in_queue'].append(proxy_resp.get('requests_in_queue', 0))
+            proxy_metrics_timeline['proxy_overhead_count'].append(proxy_resp.get('proxy_overhead_count', 0))
+            proxy_metrics_timeline['avg_queue_wait'].append(proxy_resp.get('avg_queue_wait_ms', 0))
+            proxy_metrics_timeline['connection_errors'].append(proxy_resp.get('connection_errors', 0))
+            proxy_metrics_timeline['retries'].append(proxy_resp.get('retries', 0))
         except:
             pass  # Skip if metrics unavailable
     
@@ -174,76 +194,159 @@ if latencies:
     ax1.fill_between(times, p50_over_time, p99_over_time, alpha=0.15, color='red')
     
     ax1.set_ylabel('Latency\n(ms)', fontsize=10, fontweight='bold', rotation=0, ha='right', va='center')
-    ax1.set_title('APPLICATION LAYER: Time-Aligned Diagnostic Metrics', fontsize=12, fontweight='bold', pad=10)
+    
+    # Dynamic title based on mode
+    if args.mode == "app":
+        layer_title = "APPLICATION LAYER"
+    elif args.mode == "proxy":
+        layer_title = "PROXY LAYER"
+    else:
+        layer_title = "NETWORK LAYER"
+    
+    ax1.set_title(f'{layer_title}: Time-Aligned Diagnostic Metrics', fontsize=12, fontweight='bold', pad=10)
     ax1.legend(loc='upper right', fontsize=9, ncol=2)
     ax1.grid(True, alpha=0.3, axis='y')
     ax1.set_xlim(0, max_time)
     plt.setp(ax1.get_xticklabels(), visible=False)
     
-    # 2. Lock Contention Events over time
-    if len(app_metrics_timeline['timestamps']) > 0:
-        # Calculate incremental lock contention (new events since last poll)
-        contention_incremental = [0]
-        for i in range(1, len(app_metrics_timeline['lock_contention_count'])):
-            increment = app_metrics_timeline['lock_contention_count'][i] - app_metrics_timeline['lock_contention_count'][i-1]
-            contention_incremental.append(increment)
+    # Choose which metrics to display based on mode
+    if args.mode == "proxy":
+        # PROXY MODE: Show proxy-specific metrics
+        if len(proxy_metrics_timeline['timestamps']) > 0:
+            # Calculate incremental proxy overhead events
+            overhead_incremental = [0]
+            for i in range(1, len(proxy_metrics_timeline['proxy_overhead_count'])):
+                increment = proxy_metrics_timeline['proxy_overhead_count'][i] - proxy_metrics_timeline['proxy_overhead_count'][i-1]
+                overhead_incremental.append(increment)
+            
+            # 2. Proxy Overhead Events
+            ax2.bar(proxy_metrics_timeline['timestamps'], overhead_incremental, 
+                    width=0.5, color='#4ECDC4', alpha=0.8, edgecolor='#008B8B', linewidth=1.5)
+            
+            # Add vertical lines to show correlation
+            for idx, val in enumerate(overhead_incremental):
+                if val > 0:
+                    ax1.axvline(proxy_metrics_timeline['timestamps'][idx], color='cyan', alpha=0.15, linewidth=1.5, linestyle='--')
+                    ax2.axvline(proxy_metrics_timeline['timestamps'][idx], color='cyan', alpha=0.15, linewidth=1.5, linestyle='--')
+                    ax3.axvline(proxy_metrics_timeline['timestamps'][idx], color='cyan', alpha=0.15, linewidth=1.5, linestyle='--')
+                    ax4.axvline(proxy_metrics_timeline['timestamps'][idx], color='cyan', alpha=0.15, linewidth=1.5, linestyle='--')
+                    ax5.axvline(proxy_metrics_timeline['timestamps'][idx], color='cyan', alpha=0.15, linewidth=1.5, linestyle='--')
         
-        ax2.bar(app_metrics_timeline['timestamps'], contention_incremental, 
-                width=0.5, color='#FF6B6B', alpha=0.8, edgecolor='darkred', linewidth=1.5)
+        ax2.set_ylabel('Proxy\nOverhead', fontsize=10, fontweight='bold', rotation=0, ha='right', va='center')
+        ax2.grid(True, alpha=0.3, axis='y')
+        ax2.set_xlim(0, max_time)
+        plt.setp(ax2.get_xticklabels(), visible=False)
         
-        # Add vertical lines to show correlation
-        for idx, val in enumerate(contention_incremental):
-            if val > 0:
-                ax1.axvline(app_metrics_timeline['timestamps'][idx], color='red', alpha=0.1, linewidth=1.5, linestyle='--')
-                ax2.axvline(app_metrics_timeline['timestamps'][idx], color='red', alpha=0.1, linewidth=1.5, linestyle='--')
-                ax3.axvline(app_metrics_timeline['timestamps'][idx], color='red', alpha=0.1, linewidth=1.5, linestyle='--')
-                ax4.axvline(app_metrics_timeline['timestamps'][idx], color='red', alpha=0.1, linewidth=1.5, linestyle='--')
-                ax5.axvline(app_metrics_timeline['timestamps'][idx], color='red', alpha=0.1, linewidth=1.5, linestyle='--')
+        # 3. Queue Depth (Requests Waiting in Proxy)
+        if len(proxy_metrics_timeline['timestamps']) > 0:
+            ax3.plot(proxy_metrics_timeline['timestamps'], proxy_metrics_timeline['requests_in_queue'], 
+                    color='#FF9800', linewidth=2.5, marker='o', markersize=3)
+            ax3.fill_between(proxy_metrics_timeline['timestamps'], 0, proxy_metrics_timeline['requests_in_queue'], 
+                            alpha=0.3, color='#FF9800')
+        
+        ax3.set_ylabel('Queue\nDepth', fontsize=10, fontweight='bold', rotation=0, ha='right', va='center')
+        ax3.grid(True, alpha=0.3, axis='y')
+        ax3.set_xlim(0, max_time)
+        plt.setp(ax3.get_xticklabels(), visible=False)
+        
+        # 4. Average Queue Wait Time
+        if len(proxy_metrics_timeline['timestamps']) > 0:
+            ax4.plot(proxy_metrics_timeline['timestamps'], proxy_metrics_timeline['avg_queue_wait'], 
+                    color='#2196F3', linewidth=2.5, marker='s', markersize=3)
+            ax4.fill_between(proxy_metrics_timeline['timestamps'], 0, proxy_metrics_timeline['avg_queue_wait'], 
+                            alpha=0.3, color='#2196F3')
+        
+        ax4.set_ylabel('Avg Queue\nWait (ms)', fontsize=10, fontweight='bold', rotation=0, ha='right', va='center')
+        ax4.grid(True, alpha=0.3, axis='y')
+        ax4.set_xlim(0, max_time)
+        plt.setp(ax4.get_xticklabels(), visible=False)
+        
+        # 5. Connection Errors
+        if len(proxy_metrics_timeline['timestamps']) > 0:
+            ax5.plot(proxy_metrics_timeline['timestamps'], proxy_metrics_timeline['connection_errors'], 
+                    color='#9C27B0', linewidth=2.5, marker='^', markersize=3)
+            ax5.fill_between(proxy_metrics_timeline['timestamps'], 0, proxy_metrics_timeline['connection_errors'], 
+                            alpha=0.3, color='#9C27B0')
+        
+        ax5.set_ylabel('Connection\nErrors', fontsize=10, fontweight='bold', rotation=0, ha='right', va='center')
+        ax5.set_xlabel('Time (seconds)', fontsize=11, fontweight='bold')
+        ax5.grid(True, alpha=0.3, axis='y')
+        ax5.set_xlim(0, max_time)
     
-    ax2.set_ylabel('Lock\nEvents', fontsize=10, fontweight='bold', rotation=0, ha='right', va='center')
-    ax2.grid(True, alpha=0.3, axis='y')
-    ax2.set_xlim(0, max_time)
-    plt.setp(ax2.get_xticklabels(), visible=False)
+    else:
+        # APP MODE: Show application-specific metrics
+        # 2. Lock Contention Events over time
+        if len(app_metrics_timeline['timestamps']) > 0:
+            # Calculate incremental lock contention (new events since last poll)
+            contention_incremental = [0]
+            for i in range(1, len(app_metrics_timeline['lock_contention_count'])):
+                increment = app_metrics_timeline['lock_contention_count'][i] - app_metrics_timeline['lock_contention_count'][i-1]
+                contention_incremental.append(increment)
+            
+            ax2.bar(app_metrics_timeline['timestamps'], contention_incremental, 
+                    width=0.5, color='#FF6B6B', alpha=0.8, edgecolor='darkred', linewidth=1.5)
+            
+            # Add vertical lines to show correlation
+            for idx, val in enumerate(contention_incremental):
+                if val > 0:
+                    ax1.axvline(app_metrics_timeline['timestamps'][idx], color='red', alpha=0.1, linewidth=1.5, linestyle='--')
+                    ax2.axvline(app_metrics_timeline['timestamps'][idx], color='red', alpha=0.1, linewidth=1.5, linestyle='--')
+                    ax3.axvline(app_metrics_timeline['timestamps'][idx], color='red', alpha=0.1, linewidth=1.5, linestyle='--')
+                    ax4.axvline(app_metrics_timeline['timestamps'][idx], color='red', alpha=0.1, linewidth=1.5, linestyle='--')
+                    ax5.axvline(app_metrics_timeline['timestamps'][idx], color='red', alpha=0.1, linewidth=1.5, linestyle='--')
+        
+        ax2.set_ylabel('Lock\nEvents', fontsize=10, fontweight='bold', rotation=0, ha='right', va='center')
+        ax2.grid(True, alpha=0.3, axis='y')
+        ax2.set_xlim(0, max_time)
+        plt.setp(ax2.get_xticklabels(), visible=False)
+        
+        # 3. CPU Usage over time
+        if len(app_metrics_timeline['timestamps']) > 0:
+            ax3.plot(app_metrics_timeline['timestamps'], app_metrics_timeline['cpu_usage'], 
+                    color='#FF9800', linewidth=2.5, marker='o', markersize=3)
+            ax3.fill_between(app_metrics_timeline['timestamps'], 0, app_metrics_timeline['cpu_usage'], 
+                            alpha=0.3, color='#FF9800')
+        
+        ax3.set_ylabel('CPU\n(%)', fontsize=10, fontweight='bold', rotation=0, ha='right', va='center')
+        ax3.grid(True, alpha=0.3, axis='y')
+        ax3.set_xlim(0, max_time)
+        plt.setp(ax3.get_xticklabels(), visible=False)
+        
+        # 4. Active Threads over time
+        if len(app_metrics_timeline['timestamps']) > 0:
+            ax4.plot(app_metrics_timeline['timestamps'], app_metrics_timeline['active_threads'], 
+                    color='#2196F3', linewidth=2.5, marker='s', markersize=3)
+            ax4.fill_between(app_metrics_timeline['timestamps'], 
+                            min(app_metrics_timeline['active_threads']) - 0.5,
+                            app_metrics_timeline['active_threads'], 
+                            alpha=0.3, color='#2196F3')
+        
+        ax4.set_ylabel('Active\nThreads', fontsize=10, fontweight='bold', rotation=0, ha='right', va='center')
+        ax4.grid(True, alpha=0.3, axis='y')
+        ax4.set_xlim(0, max_time)
+        plt.setp(ax4.get_xticklabels(), visible=False)
+        
+        # 5. Requests Waiting (Blocked) over time
+        if len(app_metrics_timeline['timestamps']) > 0:
+            ax5.plot(app_metrics_timeline['timestamps'], app_metrics_timeline['requests_waiting'], 
+                    color='#9C27B0', linewidth=2.5, marker='^', markersize=3)
+            ax5.fill_between(app_metrics_timeline['timestamps'], 0, app_metrics_timeline['requests_waiting'], 
+                            alpha=0.3, color='#9C27B0')
+        
+        ax5.set_ylabel('Blocked\nRequests', fontsize=10, fontweight='bold', rotation=0, ha='right', va='center')
+        ax5.set_xlabel('Time (seconds)', fontsize=11, fontweight='bold')
+        ax5.grid(True, alpha=0.3, axis='y')
+        ax5.set_xlim(0, max_time)
     
-    # 3. CPU Usage over time
-    if len(app_metrics_timeline['timestamps']) > 0:
-        ax3.plot(app_metrics_timeline['timestamps'], app_metrics_timeline['cpu_usage'], 
-                color='#FF9800', linewidth=2.5, marker='o', markersize=3)
-        ax3.fill_between(app_metrics_timeline['timestamps'], 0, app_metrics_timeline['cpu_usage'], 
-                        alpha=0.3, color='#FF9800')
+    # Dynamic title based on mode
+    if args.mode == "app":
+        title = 'Tail Latency Diagnosis - Application Contention Metrics'
+    elif args.mode == "proxy":
+        title = 'Tail Latency Diagnosis - Proxy Overhead Metrics'
+    else:
+        title = 'Tail Latency Diagnosis - Network Variability Metrics'
     
-    ax3.set_ylabel('CPU\n(%)', fontsize=10, fontweight='bold', rotation=0, ha='right', va='center')
-    ax3.grid(True, alpha=0.3, axis='y')
-    ax3.set_xlim(0, max_time)
-    plt.setp(ax3.get_xticklabels(), visible=False)
-    
-    # 4. Active Threads over time
-    if len(app_metrics_timeline['timestamps']) > 0:
-        ax4.plot(app_metrics_timeline['timestamps'], app_metrics_timeline['active_threads'], 
-                color='#2196F3', linewidth=2.5, marker='s', markersize=3)
-        ax4.fill_between(app_metrics_timeline['timestamps'], 
-                        min(app_metrics_timeline['active_threads']) - 0.5,
-                        app_metrics_timeline['active_threads'], 
-                        alpha=0.3, color='#2196F3')
-    
-    ax4.set_ylabel('Active\nThreads', fontsize=10, fontweight='bold', rotation=0, ha='right', va='center')
-    ax4.grid(True, alpha=0.3, axis='y')
-    ax4.set_xlim(0, max_time)
-    plt.setp(ax4.get_xticklabels(), visible=False)
-    
-    # 5. Requests Waiting (Blocked) over time
-    if len(app_metrics_timeline['timestamps']) > 0:
-        ax5.plot(app_metrics_timeline['timestamps'], app_metrics_timeline['requests_waiting'], 
-                color='#9C27B0', linewidth=2.5, marker='^', markersize=3)
-        ax5.fill_between(app_metrics_timeline['timestamps'], 0, app_metrics_timeline['requests_waiting'], 
-                        alpha=0.3, color='#9C27B0')
-    
-    ax5.set_ylabel('Blocked\nRequests', fontsize=10, fontweight='bold', rotation=0, ha='right', va='center')
-    ax5.set_xlabel('Time (seconds)', fontsize=11, fontweight='bold')
-    ax5.grid(True, alpha=0.3, axis='y')
-    ax5.set_xlim(0, max_time)
-    
-    plt.suptitle(f'Tail Latency Diagnosis - Application Contention Metrics (Mode: {args.mode.upper()})',
+    plt.suptitle(f'{title} (Mode: {args.mode.upper()})',
                 fontsize=15, fontweight='bold', y=0.99)
     
     # Save the figure
